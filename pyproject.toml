@@ -30,5 +30,5 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/duoscience/duoscience-client"
-"Bug Tracker" = "https://github.com/duoscience/duoscience-client/issues"
+"Homepage" = "https://github.com/duoscience-ai/duoscience-client"
+"Bug Tracker" = "https://github.com/duoscience-ai/duoscience-client/issues"
