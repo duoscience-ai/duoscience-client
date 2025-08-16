@@ -22,6 +22,7 @@ import tempfile
 import logging
 import base64
 from pathlib import Path
+from urllib.parse import unquote
 from bs4 import BeautifulSoup, NavigableString
 
 URL_RE = re.compile(r'(https?://[^\s<>"\]]+)', re.IGNORECASE)
@@ -71,6 +72,8 @@ def convert_md_to_pdf(
         )
         # Make links explicit to prevent wkhtmltopdf from "re-encoding" them
         html_body = linkify_preserving_percents(html_body)
+        # HACK for wkhtmltopdf: remove existing %XX so it can re-encode them itself
+        html_body = url_decode_anchor_hrefs(html_body)
 
         # 3. Build the complete HTML with embedded styles and logo
         user_css = ""
@@ -198,6 +201,19 @@ def linkify_preserving_percents(html: str) -> str:
                 parts.append(text[last:])
                 node.replace_with(*parts)
 
+    return str(soup)
+
+def url_decode_anchor_hrefs(html: str) -> str:
+    """
+    Decodes the href attribute of all <a> tags once, so that wkhtmltopdf can re-encode them later
+    (avoiding %25 issues). Does not modify the link text, only the href attribute.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    for a in soup.find_all("a", href=True):
+        old = a["href"]
+        new = unquote(old)  # IMPORTANT: use unquote, NOT unquote_plus
+        if new != old:
+            a["href"] = new
     return str(soup)
 
 # Example usage
