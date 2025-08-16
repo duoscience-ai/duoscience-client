@@ -26,6 +26,8 @@ from urllib.parse import unquote
 from bs4 import BeautifulSoup, NavigableString
 
 URL_RE = re.compile(r'(https?://[^\s<>"\]]+)', re.IGNORECASE)
+LIST_ITEM_RE = re.compile(r'^\s*(?:[-+*]|\d+\.)\s+')
+LIST_BULLET_RE = re.compile(r'^(\s+)((?:[-+*]|\d+\.)\s+)')
 
 logger = logging.getLogger(__name__)
 
@@ -61,13 +63,16 @@ def convert_md_to_pdf(
         with md_path.open('r', encoding='utf-8') as f:
             md_content = f.read()
 
+        md_content = ensure_blank_line_before_lists(md_content)
+        md_content = normalize_list_indentation(md_content)
+
         # 2. Convert to HTML with extensions
         logger.info("Converting Markdown to HTML with extensions.")
         html_body = markdown.markdown(
             md_content,
             extensions=[
                 'tables', 'fenced_code', 'codehilite', 
-                'admonition', 'footnotes', 'toc'
+                'admonition', 'footnotes', 'toc', 'sane_lists'
             ]
         )
         # Make links explicit to prevent wkhtmltopdf from "re-encoding" them
@@ -215,6 +220,71 @@ def url_decode_anchor_hrefs(html: str) -> str:
         if new != old:
             a["href"] = new
     return str(soup)
+
+def ensure_blank_line_before_lists(md_text: str) -> str:
+    """
+    Вставляет пустую строку ТОЛЬКО перед началом списка, если до него был обычный текст.
+    Не трогает fenced-кодовые блоки ```/~~~ и не добавляет пустые строки перед вложенными пунктами.
+    """
+    lines = md_text.splitlines()
+    out = []
+    in_fence = False
+    fence_re = re.compile(r'^\s*(```|~~~)')  # начало/конец fenced code
+
+    def is_list_line(s: str) -> bool:
+        return bool(LIST_ITEM_RE.match(s))
+
+    for line in lines:
+        # переключение fenced-блоков
+        if fence_re.match(line):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+
+        if not in_fence and is_list_line(line):
+            # найдём предыдущую НЕпустую строку
+            j = len(out) - 1
+            while j >= 0 and out[j].strip() == "":
+                j -= 1
+            prev_nonempty = out[j] if j >= 0 else ""
+
+            # если предыдущая — НЕ пункт списка и не пустая => вставим пустую строку
+            # (т.е. список начинается после обычного текста/заголовка)
+            if prev_nonempty and not is_list_line(prev_nonempty):
+                out.append("")
+        out.append(line)
+
+    return "\n".join(out)
+
+def normalize_list_indentation(md_text: str) -> str:
+    """
+    Округляет ведущие пробелы у пунктов списка до ближайшего большего кратного 4.
+    Работает только вне fenced-кода (``` / ~~~). Не трогает текстовые строки.
+    """
+    lines = md_text.splitlines()
+    out = []
+    in_fence = False
+    fence_re = re.compile(r'^\s*(```|~~~)')
+
+    for line in lines:
+        if fence_re.match(line):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+
+        if not in_fence:
+            m = LIST_BULLET_RE.match(line)
+            if m:
+                indent, marker = m.groups()
+                n = len(indent)
+                # округляем вверх до кратного 4
+                new_n = ((n + 3) // 4) * 4
+                if new_n != n:
+                    line = " " * new_n + line[n:]
+
+        out.append(line)
+
+    return "\n".join(out)
 
 # Example usage
 if __name__ == '__main__':

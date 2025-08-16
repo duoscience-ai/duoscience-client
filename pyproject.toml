@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "duoscience-client"
-version = "0.1.2"
+version = "0.1.3"
 authors = [
     { name="Roman Fitzjalen", email="fitzjalen@duoscience.ai" },
 ]
