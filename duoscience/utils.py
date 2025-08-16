@@ -14,13 +14,17 @@ Date: 8 July 2025
 """
 from __future__ import annotations
 
+import os
+import re
 import markdown
 import pdfkit
 import tempfile
-import os
 import logging
 import base64
 from pathlib import Path
+from bs4 import BeautifulSoup, NavigableString
+
+URL_RE = re.compile(r'(https?://[^\s<>"\]]+)', re.IGNORECASE)
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +69,8 @@ def convert_md_to_pdf(
                 'admonition', 'footnotes', 'toc'
             ]
         )
+        # Make links explicit to prevent wkhtmltopdf from "re-encoding" them
+        html_body = linkify_preserving_percents(html_body)
 
         # 3. Build the complete HTML with embedded styles and logo
         user_css = ""
@@ -158,6 +164,41 @@ def convert_md_to_pdf(
         logger.error(f"❌ I/O Error: {e}. Make sure wkhtmltopdf is installed and the path is correct.")
     except Exception as e:
         logger.exception(f"❌ An unexpected error occurred: {e}")
+
+def linkify_preserving_percents(html: str) -> str:
+    """
+    Replaces "bare" URLs in HTML with <a href="...">...</a>, preserving % 
+    and not touching existing <a> tags or the content of <code>/<pre>/<script>/<style>.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    skip_parents = {"a", "code", "pre", "script", "style"}
+
+    for node in list(soup.descendants):
+        if isinstance(node, NavigableString):
+            parent = node.parent
+            if not parent or parent.name in skip_parents:
+                continue
+
+            text = str(node)
+            parts = []
+            last = 0
+            changed = False
+
+            for m in URL_RE.finditer(text):
+                url = m.group(1)
+                parts.append(text[last:m.start()])
+                a = soup.new_tag("a")
+                a["href"] = url
+                a.string = url
+                parts.append(a)
+                last = m.end()
+                changed = True
+
+            if changed:
+                parts.append(text[last:])
+                node.replace_with(*parts)
+
+    return str(soup)
 
 # Example usage
 if __name__ == '__main__':
