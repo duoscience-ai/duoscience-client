@@ -183,7 +183,7 @@ if __name__ == '__main__':
         user_id="example_user_123",
         chat_id="example_chat_abc",
         content="Tell me about mitochondria.",
-        domain="biosciences",
+        domain="bioscience",
         effort="low"
     )
 

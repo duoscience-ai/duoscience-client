@@ -82,7 +82,7 @@ try:
         user_id="example_user_123",
         chat_id="example_chat_abc",
         content="Tell me about the role of mitochondria in cellular respiration.",
-        domain="biosciences",
+        domain="bioscience",
         effort="low"
     )
 
@@ -122,7 +122,7 @@ try:
         user_id="example_user_456",
         chat_id="example_research_def",
         content="What are the latest advancements in CRISPR gene editing for cancer therapy?",
-        domain="biosciences",
+        domain="bioscience",
         effort="high"  # Use 'high' effort for detailed research
     )
 
