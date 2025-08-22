@@ -29,6 +29,10 @@ URL_RE = re.compile(r'(https?://[^\s<>"\]]+)', re.IGNORECASE)
 LIST_ITEM_RE = re.compile(r'^\s*(?:[-+*]|\d+\.)\s+')
 LIST_BULLET_RE = re.compile(r'^(\s+)((?:[-+*]|\d+\.)\s+)')
 
+# --- Regex for long amino acid sequences (see soft_wrap_unbreakables) ---
+# Includes standard amino acids + commonly encountered special symbols B, Z, X, O, U, *
+AA_RE = re.compile(r'(?<![A-Za-z])([ACDEFGHIKLMNPQRSTVWYBXZOU\*]{30,})(?![A-Za-z])')
+
 logger = logging.getLogger(__name__)
 
 def convert_md_to_pdf(
@@ -57,7 +61,7 @@ def convert_md_to_pdf(
         # 1. Read the Markdown file
         md_path = Path(md_file_path)
         if not md_path.exists():
-            raise FileNotFoundError(f"Исходный файл не найден: {md_file_path}")
+            raise FileNotFoundError(f"Source file not found: {md_file_path}")
         
         logger.info(f"Reading Markdown file from {md_file_path}")
         with md_path.open('r', encoding='utf-8') as f:
@@ -79,6 +83,10 @@ def convert_md_to_pdf(
         html_body = linkify_preserving_percents(html_body)
         # HACK for wkhtmltopdf: remove existing %XX so it can re-encode them itself
         html_body = url_decode_anchor_hrefs(html_body)
+
+        # --- Soft wraps for "unbreakable" sequences (AA, long words, etc.) ---
+        # Insert U+200B every N characters in code/paragraps/table cells, so even old wkhtmltopdf can correctly wrap lines.
+        html_body = soft_wrap_unbreakables(html_body, chunk=10)
 
         # 3. Build the complete HTML with embedded styles and logo
         user_css = ""
@@ -109,34 +117,53 @@ def convert_md_to_pdf(
         <head>
             <meta charset="UTF-8">
             <style>
-                /* --- Styles for the logo --- */
-                .logo {{
-                    max-height: 40px; /* Adjust size as needed */
-                    margin-bottom: 20px; /* Space between logo and content */
-                }}
+            /* --- Styles for the logo --- */
+            .logo {{
+                max-height: 40px; /* Adjust size as needed */
+                margin-bottom: 20px; /* Space between logo and content */
+            }}
 
-                .logo + h1,
-                .logo + h2,
-                .logo + h3,
-                .logo + p {{
-                    margin-top: 0;
-                }}
+            .logo + h1,
+            .logo + h2,
+            .logo + h3,
+            .logo + p {{
+                margin-top: 0;
+            }}
 
-                /* --- Basic styles --- */
-                body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-size: 11pt; line-height: 1.6; }}
-                @page {{ size: A4; margin: 25mm; }}
-                h1, h2, h3, h4, h5, h6 {{ margin-top: 1.5em; margin-bottom: 0.5em; }}
-                table {{ width: 100%; border-collapse: collapse; margin-top: 1em; table-layout: fixed; }}
-                th, td {{ border: 1px solid #ddd; padding: 8px; vertical-align: top; word-wrap: break-word; }}
-                th {{ background-color: #f2f2f2; font-weight: bold; }}
-                code:not(pre > code) {{ background-color: #f0f0f0; padding: 2px 4px; border-radius: 3px; font-size: 0.9em;}}
-                blockquote {{ border-left: 4px solid #ddd; padding-left: 1em; color: #666; margin-left: 0; }}
-                
-                /* --- Custom user styles --- */
-                {user_css}
-                
-                /* --- Pygments code highlighting styles --- */
-                {pygments_css}
+            /* --- Basic styles --- */
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-size: 11pt; line-height: 1.6; }}
+            @page {{ size: A4; margin: 25mm; }}
+            h1, h2, h3, h4, h5, h6 {{ margin-top: 1.5em; margin-bottom: 0.5em; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 1em; table-layout: fixed; }}
+            th, td {{ border: 1px solid #ddd; padding: 8px; vertical-align: top; word-wrap: break-word; }}
+            th {{ background-color: #f2f2f2; font-weight: bold; }}
+            code:not(pre > code) {{ background-color: #f0f0f0; padding: 2px 4px; border-radius: 3px; font-size: 0.9em;}}
+            blockquote {{ border-left: 4px solid #ddd; padding-left: 1em; color: #666; margin-left: 0; }}
+
+            /* --- Wrapping long lines inside code/preformatted text blocks --- */
+            /* Enable wrapping and add compatible fallbacks for older wkhtmltopdf engines */
+            pre,
+            .codehilite pre,
+            .highlight pre {{
+                white-space: pre-wrap !important;     /* preserves formatting but allows wrapping */
+                overflow-wrap: anywhere !important;   /* modern option */
+                word-wrap: break-word !important;     /* older alias */
+                word-break: break-all;                /* hard fallback for very old engines */
+            }}
+            pre code {{
+                white-space: inherit !important;      /* inherit behavior from pre */
+            }}
+            /* Ensure wrapping outside code blocks (tables/lists/paragraphs) as well */
+            td, th, p, li {{
+                word-wrap: break-word;
+                overflow-wrap: anywhere;
+            }}
+
+            /* --- Custom user styles --- */
+            {user_css}
+            
+            /* --- Pygments code highlighting styles --- */
+            {pygments_css}
             </style>
         </head>
         <body>
@@ -160,6 +187,7 @@ def convert_md_to_pdf(
             tmp_html_path,
             str(pdf_file_path),
             configuration=cfg,
+            # NOTE: single braces — pass a dict, not a set. None/'' are typical for boolean flags in pdfkit.
             options={'encoding': 'UTF-8', 'enable-local-file-access': None}
         )
         
@@ -221,35 +249,64 @@ def url_decode_anchor_hrefs(html: str) -> str:
             a["href"] = new
     return str(soup)
 
+def _insert_zwsp_every(s: str, n: int) -> str:
+    """
+    Inserts a zero-width space (U+200B) every n characters in the string s.
+    This is invisible in rendering but allows the engine to break the line.
+    """
+    return "\u200b".join(s[i:i+n] for i in range(0, len(s), n))
+
+def soft_wrap_unbreakables(html: str, chunk: int = 10) -> str:
+    """
+    Inserts soft breaks into long AA sequences within elements
+    code/pre/p/li/td/th. Links <a> and their content are not modified.
+    
+    The length threshold is defined by AA_RE (>=30). The chunk parameter controls the step for inserting U+200B.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    targets = soup.select("code, pre, p, li, td, th")
+    for node in targets:
+        # Skip links and nodes inside links to avoid breaking URLs
+        if node.name == "a" or node.find_parent("a"):
+            continue
+        # Iterate over text nodes
+        for t in list(node.strings):
+            txt = str(t)
+            if AA_RE.search(txt):
+                new_txt = AA_RE.sub(lambda m: _insert_zwsp_every(m.group(1), chunk), txt)
+                if new_txt != txt:
+                    t.replace_with(new_txt)
+    return str(soup)
+
 def ensure_blank_line_before_lists(md_text: str) -> str:
     """
-    Вставляет пустую строку ТОЛЬКО перед началом списка, если до него был обычный текст.
-    Не трогает fenced-кодовые блоки ```/~~~ и не добавляет пустые строки перед вложенными пунктами.
+    Inserts a blank line ONLY before the start of a list if it follows regular text.
+    Does not modify fenced code blocks ```/~~~ and does not add blank lines before nested list items.
     """
     lines = md_text.splitlines()
     out = []
     in_fence = False
-    fence_re = re.compile(r'^\s*(```|~~~)')  # начало/конец fenced code
+    fence_re = re.compile(r'^\s*(```|~~~)')  # start/end of fenced code block
 
     def is_list_line(s: str) -> bool:
         return bool(LIST_ITEM_RE.match(s))
 
     for line in lines:
-        # переключение fenced-блоков
+        # toggle fenced code blocks
         if fence_re.match(line):
             in_fence = not in_fence
             out.append(line)
             continue
 
         if not in_fence and is_list_line(line):
-            # найдём предыдущую НЕпустую строку
+            # Find the previous non-empty line
             j = len(out) - 1
             while j >= 0 and out[j].strip() == "":
                 j -= 1
             prev_nonempty = out[j] if j >= 0 else ""
 
-            # если предыдущая — НЕ пункт списка и не пустая => вставим пустую строку
-            # (т.е. список начинается после обычного текста/заголовка)
+            # if the previous line is NOT a list item and not empty => insert a blank line
+            # (i.e., the list starts after regular text or a heading)
             if prev_nonempty and not is_list_line(prev_nonempty):
                 out.append("")
         out.append(line)
@@ -258,8 +315,8 @@ def ensure_blank_line_before_lists(md_text: str) -> str:
 
 def normalize_list_indentation(md_text: str) -> str:
     """
-    Округляет ведущие пробелы у пунктов списка до ближайшего большего кратного 4.
-    Работает только вне fenced-кода (``` / ~~~). Не трогает текстовые строки.
+    Rounds leading spaces of list items to the nearest greater multiple of 4.
+    Works only outside fenced code blocks (``` / ~~~). Does not modify text lines.
     """
     lines = md_text.splitlines()
     out = []
@@ -303,3 +360,12 @@ if __name__ == '__main__':
         logo_path='assets/duoscience-logo.png'
     )
     logger.info("Example finished.")
+
+    # --- Additional example matching your local run ---
+    logger.info("Starting Markdown to PDF conversion (local/markdown.md).")
+    convert_md_to_pdf(
+        md_file_path="local/markdown.md",
+        pdf_file_path="local/markdown.pdf",
+        wkhtmltopdf_path=WKHTMLTOPDF_EXECUTABLE_PATH
+    )
+    logger.info("Second example finished.")
