@@ -21,9 +21,16 @@ import pdfkit
 import tempfile
 import logging
 import base64
+import mimetypes
 from pathlib import Path
 from urllib.parse import unquote
 from bs4 import BeautifulSoup, NavigableString
+
+# Pillow is optional; image compression will be skipped if not available
+try:  # pragma: no cover - optional dependency
+    from PIL import Image  # type: ignore
+except Exception:  # pragma: no cover
+    Image = None  # type: ignore
 
 URL_RE = re.compile(r'(https?://[^\s<>"\]]+)', re.IGNORECASE)
 LIST_ITEM_RE = re.compile(r'^\s*(?:[-+*]|\d+\.)\s+')
@@ -34,6 +41,70 @@ LIST_BULLET_RE = re.compile(r'^(\s+)((?:[-+*]|\d+\.)\s+)')
 AA_RE = re.compile(r'(?<![A-Za-z])([ACDEFGHIKLMNPQRSTVWYBXZOU\*]{30,})(?![A-Za-z])')
 
 logger = logging.getLogger(__name__)
+
+# --- File helpers for API uploads ---
+def load_file_as_payload(path: str) -> dict:
+    """
+    Load a local file and convert it to DuoScience API file payload.
+
+    Returns a dict with keys: filename, content_type, base64
+    """
+    p = Path(path)
+    if not p.exists() or not p.is_file():
+        raise FileNotFoundError(f"File not found: {path}")
+    ct = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
+    with p.open("rb") as f:
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+    return {"filename": p.name, "content_type": ct, "base64": b64}
+
+
+def compress_image(input_path: str, max_dim: int = 1600, quality: int = 80, convert_to_jpeg: bool = True) -> str:
+    """
+    Resize and recompress image to reduce payload size. Returns path to a temporary file.
+
+    If Pillow is not installed or file is not an image, returns the original path unchanged.
+    """
+    # Skip if Pillow not available
+    if Image is None:
+        logger.debug("Pillow not available; skipping image compression for %s", input_path)
+        return input_path
+
+    # Check mime
+    mime = mimetypes.guess_type(input_path)[0] or ""
+    if not mime.startswith("image/"):
+        return input_path
+
+    try:
+        img = Image.open(input_path)
+        fmt = (img.format or "JPEG").upper()
+
+        # Resize keeping aspect ratio
+        w, h = img.size
+        scale = min(1.0, max_dim / max(w, h))
+        if scale < 1.0:
+            new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
+            img = img.resize(new_size, Image.LANCZOS)
+
+        # Decide output format
+        to_jpeg = convert_to_jpeg or fmt in {"PNG", "WEBP", "BMP", "TIFF"}
+        suffix = ".jpg" if to_jpeg else (os.path.splitext(input_path)[1] or ".jpg")
+
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        tmp_path = tmp.name
+        tmp.close()
+
+        if to_jpeg:
+            img = img.convert("RGB")
+            img.save(tmp_path, format="JPEG", quality=quality, optimize=True)
+        else:
+            img.save(tmp_path, format=fmt, optimize=True)
+
+        logger.info("Compressed image %s -> %s (max_dim=%s, quality=%s)", input_path, tmp_path, max_dim, quality)
+        return tmp_path
+    except Exception as e:  # pragma: no cover - best effort compression
+        logger.warning("Failed to compress image %s: %s. Using original.", input_path, e)
+        return input_path
+
 
 def convert_md_to_pdf(
     md_file_path: str,

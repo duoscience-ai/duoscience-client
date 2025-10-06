@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "duoscience-client"
-version = "0.1.5"
+version = "0.1.6"
 authors = [
     { name="Roman Fitzjalen", email="fitzjalen@duoscience.ai" },
 ]
@@ -27,7 +27,8 @@ dependencies = [
     "twine==6.1.0",
     "wheel==0.45.1",
     "setuptools==80.9.0",
-    "beautifulsoup4==4.13.4"
+    "beautifulsoup4==4.13.4",
+    "Pillow==11.3.0"
 ]
 
 [project.urls]

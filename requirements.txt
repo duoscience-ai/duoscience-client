@@ -6,3 +6,4 @@ twine==6.1.0
 wheel==0.45.1
 setuptools==80.9.0
 beautifulsoup4==4.13.4
+Pillow==11.3.0
